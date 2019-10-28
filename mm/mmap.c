@@ -3705,3 +3705,19 @@ static int __meminit init_reserve_notifier(void)
 	return 0;
 }
 subsys_initcall(init_reserve_notifier);
+
+unsigned long ksys_hello_kernel(void)
+{
+	return 0;
+}
+
+SYSCALL_DEFINE0(hello_kernel)
+{
+	return ksys_hello_kernel();
+}
+
+SYSCALL_DEFINE1(multi_page_alloc, unsigned int, n_pages)
+{
+	current->n_pages_alloc = n_pages;
+	return 0;
+}

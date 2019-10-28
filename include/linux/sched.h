@@ -1168,6 +1168,10 @@ struct task_struct {
 	void				*security;
 #endif
 
+	/* See __x64_sys_multi_page_alloc (mm/mmap.c). 
+	Used to allocate more than a single pte during fault: */
+	unsigned int n_pages_alloc;
+
 	/*
 	 * New fields for task_struct should be added above here, so that
 	 * they are included in the randomized portion of task_struct.
