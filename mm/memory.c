@@ -3112,6 +3112,68 @@ out_release:
 	return ret;
 }
 
+static int check_multi_page_alloc(struct mm_struct *vm_mm) 
+{
+	int ret = 0;
+	unsigned int n_pages_alloc = vm_mm->owner->n_pages_alloc;
+	if (n_pages_alloc > 1)
+		ret = n_pages_alloc;
+	return ret;
+}
+
+static int do_anonymous_pages(struct vm_fault *vmf, unsigned int n_pages) 
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct page *page;
+	int ret = 0;
+	pte_t entry;
+
+	int count = 0;
+
+	while (count < n_pages) {
+
+		vmf->address = vmf->address + (PAGE_SIZE * count);
+
+		if (pte_alloc(vma->vm_mm, vmf->pmd, vmf->address))
+			return VM_FAULT_OOM;
+		
+		if (unlikely(anon_vma_prepare(vma)))
+			return VM_FAULT_OOM;
+		
+		page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+		if (!page)
+			return VM_FAULT_OOM;
+		
+		__SetPageUptodate(page);
+
+		entry = mk_pte(page, vma->vm_page_prot);
+		if (vma->vm_flags & VM_WRITE)
+			entry = pte_mkwrite(pte_mkdirty(entry));
+
+		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
+				&vmf->ptl);
+		if (!pte_none(*vmf->pte)) {
+			put_page(page);
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+			return ret;
+		}
+
+		inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
+		page_add_new_anon_rmap(page, vma, vmf->address, false);
+		lru_cache_add_active_or_unevictable(page, vma);
+
+		set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+		/* No need to invalidate - it was non-present before */
+		update_mmu_cache(vma, vmf->address, vmf->pte);
+
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+
+		count++;
+	}
+
+	return ret;
+}
+
 /*
  * We enter with non-exclusive mmap_sem (to exclude vma changes,
  * but allow concurrent faults), and pte mapped but not yet locked.
@@ -3936,7 +3998,8 @@ static int wp_huge_pud(struct vm_fault *vmf, pud_t orig_pud)
 static int handle_pte_fault(struct vm_fault *vmf)
 {
 	pte_t entry;
-
+	int multi_page_alloc;
+	
 	if (unlikely(pmd_none(*vmf->pmd))) {
 		/*
 		 * Leave __pte_alloc() until later: because vm_ops->fault may
@@ -3974,10 +4037,14 @@ static int handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (!vmf->pte) {
-		if (vma_is_anonymous(vmf->vma))
+		if (!vma_is_anonymous(vmf->vma))
+			return do_fault(vmf);
+
+		multi_page_alloc = check_multi_page_alloc(vmf->vma->vm_mm);
+		if (!multi_page_alloc)
 			return do_anonymous_page(vmf);
 		else
-			return do_fault(vmf);
+			return do_anonymous_pages(vmf, multi_page_alloc);
 	}
 
 	if (!pte_present(vmf->orig_pte))
