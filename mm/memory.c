@@ -3128,22 +3128,59 @@ static int do_anonymous_pages(struct vm_fault *vmf, unsigned int n_pages)
 	int ret = 0;
 	pte_t entry;
 
-	int count = 0;
+	int count;
 
-	while (count < n_pages) {
+	/* File mapping without ->vm_ops ? */
+	if (vma->vm_flags & VM_SHARED)
+		return VM_FAULT_SIGBUS;
 
+	/* Use the zero-page for reads */
+	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
+			!mm_forbids_zeropage(vma->vm_mm)) {
+		for (count = 0; count < n_pages; count++) {
+			vmf->address = vmf->address + (PAGE_SIZE * count);
+
+			if (pte_alloc(vma->vm_mm, vmf->pmd, vmf->address))
+				return VM_FAULT_OOM;
+
+			entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address),
+						vma->vm_page_prot));
+
+			vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
+				&vmf->ptl);
+			if (!pte_none(*vmf->pte)) {
+				pte_unmap_unlock(vmf->pte, vmf->ptl);
+				break;
+			}
+
+			set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+			/* No need to invalidate - it was non-present before */
+			update_mmu_cache(vma, vmf->address, vmf->pte);
+
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+		}
+
+		return ret;
+	}
+
+	if (unlikely(anon_vma_prepare(vma)))
+		return VM_FAULT_OOM;
+
+	for (count = 0; count < n_pages; count++) {
 		vmf->address = vmf->address + (PAGE_SIZE * count);
 
 		if (pte_alloc(vma->vm_mm, vmf->pmd, vmf->address))
 			return VM_FAULT_OOM;
-		
-		if (unlikely(anon_vma_prepare(vma)))
-			return VM_FAULT_OOM;
-		
+
 		page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
 		if (!page)
 			return VM_FAULT_OOM;
-		
+
+		/*
+		* The memory barrier inside __SetPageUptodate makes sure that
+		* preceeding stores to the page contents become visible before
+		* the set_pte_at() write.
+		*/
 		__SetPageUptodate(page);
 
 		entry = mk_pte(page, vma->vm_page_prot);
@@ -3151,11 +3188,11 @@ static int do_anonymous_pages(struct vm_fault *vmf, unsigned int n_pages)
 			entry = pte_mkwrite(pte_mkdirty(entry));
 
 		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
-				&vmf->ptl);
+			&vmf->ptl);
 		if (!pte_none(*vmf->pte)) {
 			put_page(page);
 			pte_unmap_unlock(vmf->pte, vmf->ptl);
-			return ret;
+			break;
 		}
 
 		inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
@@ -3167,8 +3204,6 @@ static int do_anonymous_pages(struct vm_fault *vmf, unsigned int n_pages)
 		update_mmu_cache(vma, vmf->address, vmf->pte);
 
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
-
-		count++;
 	}
 
 	return ret;
