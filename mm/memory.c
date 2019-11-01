@@ -3195,6 +3195,8 @@ static int do_anonymous_pages(struct vm_fault *vmf, unsigned int n_pages)
 			break;
 		}
 
+		// BUG: Bad rss-counter state
+		// We have allocated more than a single page but kernel only knows about single fault
 		inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
 		page_add_new_anon_rmap(page, vma, vmf->address, false);
 		lru_cache_add_active_or_unevictable(page, vma);
