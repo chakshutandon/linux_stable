@@ -684,7 +684,7 @@ static int setup_ppkeys(struct pt_regs *regs) {
 	struct page *page;
 
 	if (!boot_cpu_has(X86_FEATURE_OSPKE))
-		return;
+		return -1;
 
 	addr = get_unmapped_area(NULL, 0, PAGE_SIZE, 0, 0);
 	if (!addr)
