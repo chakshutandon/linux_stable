@@ -665,6 +665,46 @@ out:
 	return error;
 }
 
+static vm_fault_t ppkey_fault(const struct vm_special_mapping *sm,
+		      struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	printk("[ppkey_fault] got fault\n");
+	return 0;
+}
+
+static const struct vm_special_mapping ppkey_mapping = {
+	.name = "[ppkey]",
+	.fault = ppkey_fault,
+};
+
+static int setup_ppkeys(struct pt_regs *regs) {
+	unsigned long addr;
+	struct vm_area_struct *vma;
+	struct mm_struct *mm = current->mm;
+	struct page *page;
+
+	if (!boot_cpu_has(X86_FEATURE_OSPKE))
+		return;
+
+	addr = get_unmapped_area(NULL, 0, PAGE_SIZE, 0, 0);
+	if (!addr)
+		return VM_FAULT_OOM;
+	vma = _install_special_mapping(mm, addr, PAGE_SIZE, VM_READ|VM_WRITE, &ppkey_mapping);
+	// TODO: Simulate PPKRU register with regs->r15
+	regs->r15 = addr;
+
+	// Must allocate page before returning to user-context
+	page = alloc_zeroed_user_highpage_movable(vma, addr);
+	if (!page)
+		return VM_FAULT_OOM;
+
+	down_write(&mm->mmap_sem);
+	vm_insert_page(vma, addr, page);
+	up_write(&mm->mmap_sem);
+
+	return 0;
+}
+
 /*
  * These are the functions used to load ELF style executables and shared
  * libraries.  There is no binary dependent code anywhere else.
@@ -1149,6 +1189,12 @@ out_free_interp:
 	 */
 	ELF_PLAT_INIT(regs, reloc_func_desc);
 #endif
+
+#ifdef CONFIG_ARCH_HAS_PKEYS
+	retval = setup_ppkeys(regs);
+	if (retval < 0)
+		goto out;
+#endif /* CONFIG_ARCH_HAS_PKEYS */
 
 	finalize_exec(bprm);
 	start_thread(regs, elf_entry, bprm->p);
